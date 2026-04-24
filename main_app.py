@@ -28,7 +28,7 @@ DISPLAY_COLUMNS = [
 def get_shift_now():
     now = datetime.now()
 
-    if now.hour < 7:
+    if now.hour < 9:
         now = now - timedelta(days=1)
 
     return now.time()
@@ -282,7 +282,7 @@ class App(QMainWindow):
         # AUTO REFRESH
         self.timer = QTimer()
         self.timer.timeout.connect(self.auto_refresh)
-        self.timer.start(5000)
+        self.timer.start(15000)
 
     # =========================
     # UI
@@ -454,7 +454,7 @@ class App(QMainWindow):
         right.addLayout(btn_layout)
 
         btn_layout.addWidget(btn_export)
-        btn_layout.addWidget(btn_rack)
+        # btn_layout.addWidget(btn_rack)
         right.addLayout(btn_layout)
 
         layout.addLayout(right, 3)
