@@ -1,10 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import sys, os, json, threading, time
 import pandas as pd
 from PySide6.QtWidgets import *
 from PySide6.QtCore import QEvent, QSize, Qt, QAbstractTableModel, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import QWidgetAction
+from PySide6.QtWidgets import QInputDialog
 from license_system import validate_license
 from PySide6.QtWidgets import QStyledItemDelegate
 from PySide6.QtCore import QRect
@@ -24,7 +25,13 @@ DISPLAY_COLUMNS = [
     "Routetype", "Order Type"
 ]
 
+def get_shift_now():
+    now = datetime.now()
 
+    if now.hour < 7:
+        now = now - timedelta(days=1)
+
+    return now.time()
 # =========================
 # LICENSE CHECK
 # =========================
@@ -1053,11 +1060,29 @@ class App(QMainWindow):
     # PRESETS
     # =========================
     def save_preset(self):
-        name, ok = QInputDialog.getText(self, "Preset", "Name")
-        if not ok:
+        name, ok = QInputDialog.getText(self, "Preset", "Preset Name")
+        if not ok or not name:
             return
 
-        self.presets[name] = self.filters.copy()
+        # 🔥 GET FROM TIME
+        from_time, ok1 = QInputDialog.getText(
+            self, "From Time", "Enter From Time (HH:MM:SS)", text="00:00:00"
+        )
+        if not ok1:
+            return
+
+        # 🔥 GET TO TIME
+        to_time, ok2 = QInputDialog.getText(
+            self, "To Time", "Enter To Time (HH:MM:SS)", text="23:59:59"
+        )
+        if not ok2:
+            return
+
+        preset_data = self.filters.copy()
+        preset_data["from_time"] = from_time
+        preset_data["to_time"] = to_time
+
+        self.presets[name] = preset_data
         self.save_json(PRESET_FILE, self.presets)
 
         if self.preset_box.findText(name) == -1:
@@ -1077,15 +1102,36 @@ class App(QMainWindow):
             self.apply_filters()
 
     def run_all_presets(self):
-        from datetime import datetime
         import time
 
-        print(" Running all presets...")
+        print("🚀 Running all presets...")
+
+        now = get_shift_now()
+        print("🕒 Shift Time:", now)
 
         for name, preset in self.presets.items():
-            print(f" Running preset: {name}")
+            print(f"👉 Checking preset: {name}")
 
-            # APPLY PRESET
+            from_time = preset.get("from_time", "00:00:00")
+            to_time = preset.get("to_time", "23:59:59")
+
+            ft = datetime.strptime(from_time, "%H:%M:%S").time()
+            tt = datetime.strptime(to_time, "%H:%M:%S").time()
+
+            # 🔥 TIME FILTER
+            if ft <= tt:
+                valid = ft <= now <= tt
+            else:
+                valid = now >= ft or now <= tt
+
+            if not valid:
+                print(f"⏭ Skipping {name} (outside time range)")
+                continue
+                
+
+            print(f"✅ Running preset: {name}")
+
+            # APPLY FILTERS
             self.filters["order_type"] = preset.get("order_type", [])
             self.filters["route_type"] = preset.get("route_type", [])
             self.filters["slot"] = preset.get("slot", [])
@@ -1094,33 +1140,43 @@ class App(QMainWindow):
             self.populate_filters()
             self.apply_filters()
 
-            # ? SMALL DELAY (UI settle)
             QApplication.processEvents()
             time.sleep(1)
 
-            # ? SKIP IF EMPTY
+            # ❌ SKIP EMPTY
             if self.filtered_df is None or self.filtered_df.empty:
-                print(f" Skipping {name} (no data)")
+                print(f"⚠️ No data for {name}, skipping")
                 continue
 
-            # ?? SEND
-            self.send_preset_to_telegram(name)
+            # 📩 SEND
+            self.send_preset_to_telegram(name, preset)
 
             time.sleep(2)
 
-        print(" All presets done")
+        print("✅ All presets done")
 
-    def send_preset_to_telegram(self, preset_name):
+    def send_preset_to_telegram(self, preset_name, preset):
         import requests
 
         BOT_TOKEN = "8663778811:AAEqvTZYh8Lx6PocVh6zEVCEtF9I59VGdIo"
         CHAT_ID = "-5117824741"
 
-        # GET SLOT (important)
         slot = ", ".join(self.filters.get("slot", [])) or "All"
+        order_type = ", ".join(self.filters.get("order_type", [])) or "All"
+        route_type = ", ".join(self.filters.get("route_type", [])) or "All"
 
-        # HEADER
-        lines = [f" {preset_name} | Slot: {slot}", ""]
+        from_time = preset.get("from_time", "00:00:00")
+        to_time = preset.get("to_time", "23:59:59")
+
+        # 🔥 HEADER
+        lines = [
+            f"📦 {preset_name}",
+            f"🕒 {from_time} → {to_time}",
+            f"📍 Slot: {slot}",
+            f"📦 Order: {order_type}",
+            f"🚚 Route: {route_type}",
+            ""
+        ]
 
         racks = self.filtered_df.groupby("Current Rack Grp")
 

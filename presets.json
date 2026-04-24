@@ -40,5 +40,15 @@
         "order_class": [
             "MEDICINE"
         ]
+    },
+    "12:30 LR": {
+        "order_type": [],
+        "route_type": [],
+        "slot": [
+            "KOL_12.30AM (LR)"
+        ],
+        "order_class": [],
+        "from_time": "06:00:00",
+        "to_time": "12:30:00"
     }
 }

@@ -106,19 +106,33 @@ def download_tray_status():
         # DOWNLOAD DETECTION (FIXED)
         # =========================
         try:
-            # 🔥 Wait for the download event triggered by pressing Enter on "Excel"
             with page.expect_download(timeout=90000) as download_info:
                 page.keyboard.press("Enter")
             
             download = download_info.value
             
+            # --- CUSTOM BUSINESS DAY LOGIC ---
+            from datetime import timedelta
+            now = datetime.now()
+            
+            # If it is before 9:00 AM, count it as the previous calendar day
+            if now.hour < 9:
+                business_date = now - timedelta(days=1)
+            else:
+                business_date = now
+
+            # Format the string using the calculated business date (but keep the actual time for tracking)
+            date_str = business_date.strftime('%Y-%m-%d')
+            time_str = now.strftime('%H-%M')
+            
             # Create your final file path
             new_name = os.path.join(
                 DOWNLOAD_DIR,
-                f"tray_status_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.xlsx"
+                f"tray_status_{date_str}_{time_str}.xlsx"
             )
+            # ---------------------------------
 
-            # Save the file from Playwright's temp folder directly to your folder
+            # Save the file
             download.save_as(new_name)
             print(f"🎉 SUCCESS: {new_name}")
 
