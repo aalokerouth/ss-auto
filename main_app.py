@@ -426,6 +426,7 @@ class App(QMainWindow):
         right.addWidget(self.table)
 
         btn_layout = QHBoxLayout()
+
         btn_export = QPushButton("Export View")
         btn_export.clicked.connect(self.export_view)
 
@@ -435,7 +436,15 @@ class App(QMainWindow):
         btn_notify = QPushButton("Send to Telegram")
         btn_notify.clicked.connect(self.rack_notify_telegram)
 
+        btn_auto = QPushButton("Run All Presets")
+        btn_auto.clicked.connect(self.run_all_presets)
+
         btn_layout.addWidget(btn_notify)
+        btn_layout.addWidget(btn_export)
+        btn_layout.addWidget(btn_rack)
+        btn_layout.addWidget(btn_auto)
+
+        right.addLayout(btn_layout)
 
         btn_layout.addWidget(btn_export)
         btn_layout.addWidget(btn_rack)
@@ -1024,17 +1033,15 @@ class App(QMainWindow):
             if f.lower().endswith(".xlsx") and "tray_status" in f.lower()
         ]
 
-        files.sort(key=lambda x: os.path.getmtime(os.path.join(self.folder, x)), reverse=True)
-
         if not files:
             return
 
+        files.sort(key=lambda x: os.path.getmtime(os.path.join(self.folder, x)), reverse=True)
         latest = files[0]
 
-        if self.file_box.currentText() != latest:
-            self.file_box.setCurrentText(latest)
-        else:
-            self.load_file()
+        # ?? ALWAYS reload latest file
+        self.file_box.setCurrentText(latest)
+        self.load_file()
 
     def populate_filters(self):
         self.order.populate(self.df["Order Type"].dropna().unique(), self.filters["order_type"])
@@ -1068,6 +1075,66 @@ class App(QMainWindow):
 
             self.populate_filters()
             self.apply_filters()
+
+    def run_all_presets(self):
+        from datetime import datetime
+        import time
+
+        print(" Running all presets...")
+
+        for name, preset in self.presets.items():
+            print(f" Running preset: {name}")
+
+            # APPLY PRESET
+            self.filters["order_type"] = preset.get("order_type", [])
+            self.filters["route_type"] = preset.get("route_type", [])
+            self.filters["slot"] = preset.get("slot", [])
+            self.filters["order_class"] = preset.get("order_class", [])
+
+            self.populate_filters()
+            self.apply_filters()
+
+            # ? SMALL DELAY (UI settle)
+            QApplication.processEvents()
+            time.sleep(1)
+
+            # ? SKIP IF EMPTY
+            if self.filtered_df is None or self.filtered_df.empty:
+                print(f" Skipping {name} (no data)")
+                continue
+
+            # ?? SEND
+            self.send_preset_to_telegram(name)
+
+            time.sleep(2)
+
+        print(" All presets done")
+
+    def send_preset_to_telegram(self, preset_name):
+        import requests
+
+        BOT_TOKEN = "8663778811:AAEqvTZYh8Lx6PocVh6zEVCEtF9I59VGdIo"
+        CHAT_ID = "-5117824741"
+
+        # GET SLOT (important)
+        slot = ", ".join(self.filters.get("slot", [])) or "All"
+
+        # HEADER
+        lines = [f" {preset_name} | Slot: {slot}", ""]
+
+        racks = self.filtered_df.groupby("Current Rack Grp")
+
+        for rack, df in racks:
+            trays = df["Tray Code"].drop_duplicates().astype(str).tolist()
+            if trays:
+                lines.append(f"{rack}  " + "  ".join(trays))
+
+        message = "\n".join(lines)
+
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": message}
+        )
 
     # =========================
     # JSON

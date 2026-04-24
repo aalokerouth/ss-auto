@@ -275,7 +275,7 @@ class App(QMainWindow):
         # AUTO REFRESH
         self.timer = QTimer()
         self.timer.timeout.connect(self.auto_refresh)
-        self.timer.start(60000)
+        self.timer.start(5000)
 
     # =========================
     # UI
@@ -432,6 +432,11 @@ class App(QMainWindow):
         btn_rack = QPushButton("Rack-wise Export")
         btn_rack.clicked.connect(self.export_rack)
 
+        btn_notify = QPushButton("Send to Telegram")
+        btn_notify.clicked.connect(self.rack_notify_telegram)
+
+        btn_layout.addWidget(btn_notify)
+
         btn_layout.addWidget(btn_export)
         btn_layout.addWidget(btn_rack)
         right.addLayout(btn_layout)
@@ -535,6 +540,61 @@ class App(QMainWindow):
         }
         """)
 
+    def rack_notify_telegram(self):
+        if self.filtered_df is None:
+            return
+    
+        import requests
+        import re
+    
+        BOT_TOKEN = "8663778811:AAEqvTZYh8Lx6PocVh6zEVCEtF9I59VGdIo"
+        CHAT_ID = "-5117824741"
+    
+        selected_racks = []
+    
+        for i in range(self.rack_list.count()):
+            item = self.rack_list.item(i)
+            if item.data(Qt.CheckStateRole) == Qt.Checked:
+                rack = item.text().split(" (")[0]
+                selected_racks.append(rack)
+    
+        if not selected_racks:
+            QMessageBox.warning(self, "No Selection", "Select at least one rack")
+            return
+
+    # 🔥 SORT
+        def rack_sort_key(x):
+            nums = re.findall(r'\d+', str(x))
+            return int(nums[0]) if nums else 0
+
+        selected_racks = sorted(selected_racks, key=rack_sort_key)
+
+    # 🔥 BUILD MESSAGE (CLEAN FORMAT)
+        lines = []
+        for rack in selected_racks:
+            df = self.filtered_df[
+                self.filtered_df["Current Rack Grp"] == rack
+            ]
+
+            trays = df["Tray Code"].drop_duplicates().astype(str).tolist()
+
+            if trays:
+                line = f"{rack}  " + "  ".join(trays)
+                lines.append(line)
+
+        message = "\n".join(lines)
+
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+
+        try:
+            requests.post(url, data={
+                "chat_id": CHAT_ID,
+                "text": message
+            })
+            QMessageBox.information(self, "Sent", "Message sent to Telegram group")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+
     def apply_light(self):
         self.setStyleSheet("QWidget { background:#f5f5f5; color:#111; }")
 
@@ -627,41 +687,71 @@ class App(QMainWindow):
     # EXPORT
     # =========================
     def export_view(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save", "", "Excel (*.xlsx)")
-        if path:
-            df = self.filtered_df.copy()
+        from datetime import datetime
 
-            if "Tray Code" in df.columns:
-                df = df.drop_duplicates(subset=["Tray Code"])
+        count = len(self.filtered_df)
+        default_name = f"filtered_{count}_rows_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.xlsx"
 
-            df.to_excel(path, index=False)
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save",
+            default_name,   # 🔥 auto filename here
+            "Excel (*.xlsx)"
+        )
+
+        if not path:
+            return
+
+        df = self.filtered_df.copy()
+
+        if "Tray Code" in df.columns:
+            df = df.drop_duplicates(subset=["Tray Code"])
+
+        df.to_excel(path, index=False)
 
     def export_rack(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save", "", "Excel (*.xlsx)")
+        default_name = f"rack_report_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.xlsx"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save",
+            default_name,   # 🔥 auto filename
+            "Excel (*.xlsx)"
+        )
+
         if not path:
             return
 
         import re
 
-        # 🔥 SMART SORT (handles -, numbers, mixed like A12)
         def rack_sort_key(x):
-            s = str(x)
-            nums = re.findall(r'\d+', s)
-            return (s[0] if s else "", int(nums[0]) if nums else 0)
+            nums = re.findall(r'\d+', str(x))
+            return int(nums[0]) if nums else 0
 
         racks = sorted(
             self.filtered_df["Current Rack Grp"].dropna().unique(),
             key=rack_sort_key
         )
 
-        final_df = pd.DataFrame()
+        data = []
 
         for r in racks:
             trays = self.filtered_df[
                 self.filtered_df["Current Rack Grp"] == r
-            ]["Tray Code"].drop_duplicates().reset_index(drop=True)
+            ]["Tray Code"].drop_duplicates().astype(str).tolist()
 
-            final_df[str(r)] = trays  # ensure string column names
+            if trays:
+                row = {"Rack": r}
+
+                # 🔥 Spread trays across columns
+                for i, tray in enumerate(trays, start=1):
+                    row[f"Tray{i}"] = tray
+
+                data.append(row)
+
+        final_df = pd.DataFrame(data)
+
+        # 🔥 Fill missing cells (important for clean Excel)
+        final_df = final_df.fillna("")
 
         final_df.to_excel(path, index=False)
 
@@ -868,7 +958,7 @@ class App(QMainWindow):
 
         files = [
     f for f in os.listdir(folder)
-    if f.lower().endswith(".xlsx") and "tray status" in f.lower()
+    if f.lower().endswith(".xlsx") and "tray_status" in f.lower()
 ]
         files.sort(key=lambda x: os.path.getmtime(os.path.join(folder, x)), reverse=True)
 
@@ -931,7 +1021,7 @@ class App(QMainWindow):
 
         files = [
             f for f in os.listdir(self.folder)
-            if f.lower().endswith(".xlsx") and "tray status" in f.lower()
+            if f.lower().endswith(".xlsx") and "tray_status" in f.lower()
         ]
 
         files.sort(key=lambda x: os.path.getmtime(os.path.join(self.folder, x)), reverse=True)
