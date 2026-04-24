@@ -1,0 +1,16 @@
+{
+    "PATNA": {
+        "order_type": [
+            "B2B"
+        ],
+        "route_type": [
+            "LR"
+        ],
+        "slot": [
+            "PATNA_05:00PM"
+        ],
+        "order_class": [
+            "MEDICINE"
+        ]
+    }
+}
