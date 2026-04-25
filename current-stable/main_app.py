@@ -1,10 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import sys, os, json, threading, time
 import pandas as pd
 from PySide6.QtWidgets import *
 from PySide6.QtCore import QEvent, QSize, Qt, QAbstractTableModel, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import QWidgetAction
+from PySide6.QtWidgets import QInputDialog
 from license_system import validate_license
 from PySide6.QtWidgets import QStyledItemDelegate
 from PySide6.QtCore import QRect
@@ -13,6 +14,10 @@ from PySide6.QtGui import QPalette
 from PySide6.QtGui import QTextDocument
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 from PySide6.QtGui import QPainter
+try:
+    from play2 import download_tray_status
+except:
+    download_tray_status = None
 
 
 CONFIG_FILE = "config.json"
@@ -24,7 +29,13 @@ DISPLAY_COLUMNS = [
     "Routetype", "Order Type"
 ]
 
+def get_shift_now():
+    now = datetime.now()
 
+    if now.hour < 9:
+        now = now - timedelta(days=1)
+
+    return now.time()
 # =========================
 # LICENSE CHECK
 # =========================
@@ -239,7 +250,10 @@ class App(QMainWindow):
     def __init__(self):
         super().__init__()
         from PySide6.QtGui import QFont
-        self.setFont(QFont("Segoe UI", 11))
+        font = QFont()
+        font.setFamily("Segoe UI")
+        font.setPointSize(10)
+        self.setFont(font)
         self.setWindowTitle("Tray Filter App")
         self.resize(1500, 850)
 
@@ -275,7 +289,7 @@ class App(QMainWindow):
         # AUTO REFRESH
         self.timer = QTimer()
         self.timer.timeout.connect(self.auto_refresh)
-        self.timer.start(5000)
+        self.timer.start(15000)
 
     # =========================
     # UI
@@ -426,6 +440,7 @@ class App(QMainWindow):
         right.addWidget(self.table)
 
         btn_layout = QHBoxLayout()
+
         btn_export = QPushButton("Export View")
         btn_export.clicked.connect(self.export_view)
 
@@ -435,11 +450,33 @@ class App(QMainWindow):
         btn_notify = QPushButton("Send to Telegram")
         btn_notify.clicked.connect(self.rack_notify_telegram)
 
-        btn_layout.addWidget(btn_notify)
+        btn_auto = QPushButton("Run All Presets")
+        btn_auto.clicked.connect(self.run_all_presets)
 
+        btn_run_pw = QPushButton("Start Auto Download")
+        btn_run_pw.clicked.connect(self.start_playwright_loop)
+
+        btn_stop_pw = QPushButton("Stop Auto Download")
+        btn_stop_pw.clicked.connect(self.stop_playwright_loop)
+
+
+        
+
+        btn_layout.addWidget(btn_notify)
         btn_layout.addWidget(btn_export)
         btn_layout.addWidget(btn_rack)
+        btn_layout.addWidget(btn_auto)
+        btn_layout.addWidget(btn_run_pw)
+        btn_layout.addWidget(btn_stop_pw)
+
         right.addLayout(btn_layout)
+
+        self.log_box = QTextEdit()
+        self.log_box.setReadOnly(True)
+        right.addWidget(self.log_box)
+
+        btn_layout.addWidget(btn_export)
+        # btn_layout.addWidget(btn_rack)
 
         layout.addLayout(right, 3)
         self.rack_list.setSpacing(6)
@@ -539,6 +576,57 @@ class App(QMainWindow):
             gridline-color: #30363d;
         }
         """)
+    def start_playwright_loop(self):
+        if hasattr(self, "pw_running") and self.pw_running:
+            self.log("[INFO] Already running")
+            return
+
+        self.pw_running = True
+        self.log("[START] Scheduler started")
+
+        def loop():
+            while self.pw_running:
+                now = datetime.now()
+                hour = now.hour
+
+                interval = 15*60 if 9 <= hour < 21 else 7*60
+
+                self.log(f"[RUN] {now.strftime('%H:%M:%S')}")
+
+                # 🔥 RETRY LOGIC
+                success = False
+                for attempt in range(3):
+                    try:
+                        import subprocess
+                        result = subprocess.run([sys.executable, "play2.py"], timeout=180)
+
+                        if result.returncode == 0:
+                            success = True
+                            self.log(f"[OK] Download success (try {attempt+1})")
+                            break
+                        else:
+                            self.log(f"[RETRY {attempt+1}] Script failed")
+                        self.log(f"[OK] Download success (try {attempt+1})")
+                        break
+                    except Exception as e:
+                        self.log(f"[RETRY {attempt+1}] {e}")
+                        time.sleep(5)
+
+                if not success:
+                    self.log("[FAIL] Download failed after retries")
+
+                self.log(f"[SLEEP] {interval//60} mins")
+                time.sleep(interval)
+
+        threading.Thread(target=loop, daemon=True).start()
+
+    def stop_playwright_loop(self):
+        self.pw_running = False
+        self.log("[STOP] Scheduler stopped")
+
+    def log(self, msg):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_box.append(f"[{timestamp}] {msg}")
 
     def rack_notify_telegram(self):
         if self.filtered_df is None:
@@ -1018,23 +1106,32 @@ class App(QMainWindow):
     def auto_refresh(self):
         if not hasattr(self, "folder"):
             return
-
+    
         files = [
             f for f in os.listdir(self.folder)
             if f.lower().endswith(".xlsx") and "tray_status" in f.lower()
         ]
-
-        files.sort(key=lambda x: os.path.getmtime(os.path.join(self.folder, x)), reverse=True)
-
+    
         if not files:
             return
-
+    
+        files.sort(key=lambda x: os.path.getmtime(os.path.join(self.folder, x)), reverse=True)
         latest = files[0]
-
-        if self.file_box.currentText() != latest:
+    
+        # 🔥 ALWAYS reload if new OR same (force)
+        if getattr(self, "last_loaded_file", None) != latest:
+            self.log(f"[NEW FILE] {latest}")
+            self.last_loaded_file = latest
+    
+            # 🔥 FORCE refresh dropdown
+            self.file_box.blockSignals(True)
+            self.file_box.clear()
+            self.file_box.addItems(files)
             self.file_box.setCurrentText(latest)
-        else:
+            self.file_box.blockSignals(False)
+    
             self.load_file()
+            self.run_all_presets()
 
     def populate_filters(self):
         self.order.populate(self.df["Order Type"].dropna().unique(), self.filters["order_type"])
@@ -1046,11 +1143,29 @@ class App(QMainWindow):
     # PRESETS
     # =========================
     def save_preset(self):
-        name, ok = QInputDialog.getText(self, "Preset", "Name")
-        if not ok:
+        name, ok = QInputDialog.getText(self, "Preset", "Preset Name")
+        if not ok or not name:
             return
 
-        self.presets[name] = self.filters.copy()
+        # 🔥 GET FROM TIME
+        from_time, ok1 = QInputDialog.getText(
+            self, "From Time", "Enter From Time (HH:MM:SS)", text="00:00:00"
+        )
+        if not ok1:
+            return
+
+        # 🔥 GET TO TIME
+        to_time, ok2 = QInputDialog.getText(
+            self, "To Time", "Enter To Time (HH:MM:SS)", text="23:59:59"
+        )
+        if not ok2:
+            return
+
+        preset_data = self.filters.copy()
+        preset_data["from_time"] = from_time
+        preset_data["to_time"] = to_time
+
+        self.presets[name] = preset_data
         self.save_json(PRESET_FILE, self.presets)
 
         if self.preset_box.findText(name) == -1:
@@ -1068,6 +1183,97 @@ class App(QMainWindow):
 
             self.populate_filters()
             self.apply_filters()
+
+    def run_all_presets(self):
+        import time
+
+        self.log("[start] Running all presets...")
+
+        now = get_shift_now()
+        self.log(f"Shift Time: {now}")
+
+        for name, preset in self.presets.items():
+            print(f"👉 Checking preset: {name}")
+
+            from_time = preset.get("from_time", "00:00:00")
+            to_time = preset.get("to_time", "23:59:59")
+
+            ft = datetime.strptime(from_time, "%H:%M:%S").time()
+            tt = datetime.strptime(to_time, "%H:%M:%S").time()
+
+            # 🔥 TIME FILTER
+            if ft <= tt:
+                valid = ft <= now <= tt
+            else:
+                valid = now >= ft or now <= tt
+
+            if not valid:
+                print(f"⏭ Skipping {name} (outside time range)")
+                continue
+                
+
+            print(f"✅ Running preset: {name}")
+
+            # APPLY FILTERS
+            self.filters["order_type"] = preset.get("order_type", [])
+            self.filters["route_type"] = preset.get("route_type", [])
+            self.filters["slot"] = preset.get("slot", [])
+            self.filters["order_class"] = preset.get("order_class", [])
+
+            self.populate_filters()
+            self.apply_filters()
+
+            QApplication.processEvents()
+            time.sleep(1)
+
+            # ❌ SKIP EMPTY
+            if self.filtered_df is None or self.filtered_df.empty:
+                print(f"⚠️ No data for {name}, skipping")
+                continue
+
+            # 📩 SEND
+            self.send_preset_to_telegram(name, preset)
+
+            time.sleep(2)
+
+        self.log("✅ All presets done")
+
+    def send_preset_to_telegram(self, preset_name, preset):
+        import requests
+
+        BOT_TOKEN = "8663778811:AAEqvTZYh8Lx6PocVh6zEVCEtF9I59VGdIo"
+        CHAT_ID = "-5117824741"
+
+        slot = ", ".join(self.filters.get("slot", [])) or "All"
+        order_type = ", ".join(self.filters.get("order_type", [])) or "All"
+        route_type = ", ".join(self.filters.get("route_type", [])) or "All"
+
+        from_time = preset.get("from_time", "00:00:00")
+        to_time = preset.get("to_time", "23:59:59")
+
+        # 🔥 HEADER
+        lines = [
+            f"📦 {preset_name}",
+            f"🕒 {from_time} → {to_time}",
+            f"📍 Slot: {slot}",
+            f"📦 Order: {order_type}",
+            f"🚚 Route: {route_type}",
+            ""
+        ]
+
+        racks = self.filtered_df.groupby("Current Rack Grp")
+
+        for rack, df in racks:
+            trays = df["Tray Code"].drop_duplicates().astype(str).tolist()
+            if trays:
+                lines.append(f"{rack}  " + "  ".join(trays))
+
+        message = "\n".join(lines)
+
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": message}
+        )
 
     # =========================
     # JSON

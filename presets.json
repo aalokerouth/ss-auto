@@ -1,54 +1,49 @@
 {
-    "PATNA": {
+    "SAME DAY-1": {
         "order_type": [
             "B2B"
         ],
-        "route_type": [
-            "LR"
-        ],
-        "slot": [
-            "PATNA_05:00PM"
-        ],
-        "order_class": [
-            "MEDICINE"
-        ]
-    },
-    "MALDA": {
-        "order_type": [
-            "B2B"
-        ],
-        "route_type": [
-            "LR"
-        ],
-        "slot": [
-            "MALDA_07:00PM"
-        ],
-        "order_class": [
-            "MEDICINE"
-        ]
-    },
-    "KOL_1:30": {
-        "order_type": [
-            "B2B"
-        ],
-        "route_type": [
-            "LR"
-        ],
-        "slot": [
-            "KOL_01.30AM (LR)"
-        ],
-        "order_class": [
-            "MEDICINE"
-        ]
-    },
-    "12:30 LR": {
-        "order_type": [],
         "route_type": [],
         "slot": [
-            "KOL_12.30AM (LR)"
+            "SAME DAY1"
         ],
-        "order_class": [],
-        "from_time": "06:00:00",
-        "to_time": "12:30:00"
+        "order_class": [
+            "MEDICINE"
+        ],
+        "from_time": "00:00:00",
+        "to_time": "15:00:00",
+        "use_prev_day_until_9": true
+    },
+    "SAME DAY-2": {
+        "order_type": [
+            "B2B"
+        ],
+        "route_type": [],
+        "slot": [
+            "SAME DAY2"
+        ],
+        "order_class": [
+            "MEDICINE"
+        ],
+        "from_time": "09:00:00",
+        "to_time": "16:00:00",
+        "use_prev_day_until_9": false
+    },
+    "B2C PI": {
+        "order_type": [
+            "B2C"
+        ],
+        "route_type": [
+            "NR"
+        ],
+        "slot": [
+            "PanIndia-10000"
+        ],
+        "order_class": [
+            "MEDICINE"
+        ],
+        "from_time": "09:00:00",
+        "to_time": "14:00:00",
+        "use_prev_day_until_9": false
     }
 }

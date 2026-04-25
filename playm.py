@@ -1,6 +1,8 @@
 from playwright.sync_api import sync_playwright
 from datetime import datetime
+from datetime import timedelta
 import os
+import sys
 
 DOWNLOAD_DIR = r"D:\current tray"
 
@@ -58,72 +60,104 @@ def download_tray_status():
         page.wait_for_timeout(3000)
 
         # =========================
-        # KEYBOARD NAVIGATION TO TIME
+        # BUSINESS DATE LOGIC
         # =========================
-        page.click("body")
+        if len(sys.argv) > 1:
+            date_str = sys.argv[1]
+        else:
+            now = datetime.now()
+            if now.hour < 9:
+                now = now - timedelta(days=1)
+            date_str = now.strftime("%Y-%m-%d")
 
-        for _ in range(7):
-            page.keyboard.press("Tab")
-            page.wait_for_timeout(200)
-
-        # =========================
-        # SET TIME = 23:59:59
-        # =========================
-        page.keyboard.press("Control+A")
-        page.keyboard.press("Backspace")
-        page.keyboard.type("235959")
+        print(f"📅 Using date: {date_str}")
 
         # =========================
-        # CLICK SHOW
+        # SET DATE & TIME USING KEYBOARD WORKAROUND
         # =========================
-        page.keyboard.press("Tab")
-        page.keyboard.press("Tab")
-        page.keyboard.press("Enter")
-
-        print("⏳ Waiting for data load...")
-        page.wait_for_timeout(15000)
-
-        # =========================
-        # EXPORT USING KEYBOARD FLOW
-        # =========================
-        print("👉 Reset focus via search")
+        print("👉 Resetting focus to Search box...")
+        search_box = page.locator('input[placeholder*="Search"]')
         search_box.click()
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(500)
 
-        print("👉 TAB navigation to Export...")
-        for i in range(21):
+        print("👉 Pressing Tab 8 times to reach 'From Date'...")
+        for _ in range(8):  
             page.keyboard.press("Tab")
-            # print(f"   🔹 Tab {i+1}/21")
-            # page.wait_for_timeout(500)
+            page.wait_for_timeout(100)
 
-        print("👉 Opening Export dropdown")
-        page.keyboard.press("Enter")
-        page.wait_for_timeout(2000)
+        print(f"👉 Typing From Date: {date_str}")
+        page.keyboard.type(date_str)
 
-        print("👉 Selecting Excel and waiting for download...")
+        print("👉 Pressing Tab to reach 'To Date'...")
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(100)
+
+        print(f"👉 Typing To Date: {date_str}")
+        page.keyboard.type(date_str)
+
+        print("👉 Pressing Tab to reach 'From Time'...")
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(100)
+
+        print("👉 Typing From Time: 00:00:00")
+        page.keyboard.type("00:00:00")
+
+        print("👉 Pressing Tab TWICE to reach 'To Time'...")
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(100)
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(100)
+
+        print("👉 Typing To Time: 23:59:59")
+        page.keyboard.type("23:59:59")
+
+        print("✅ Date and Time set seamlessly via keyboard")
 
         # =========================
-        # DOWNLOAD DETECTION (FIXED)
+        # CLICK SHOW BUTTON (KEYBOARD)
+        # =========================
+        print("👉 Tabbing to the Show button...")
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(100)
+        page.keyboard.press("Tab")  
+        page.wait_for_timeout(100)
+
+        print("👉 Pressing Enter to click Show...")
+        page.keyboard.press("Enter")
+
+        print("⏳ Waiting 10 seconds for data to process...")
+        page.wait_for_timeout(10000)  # Hard pause instead of searching for a table
+
+        # =========================
+        # EXPORT USING KEYBOARD FLOW (17 TABS)
+        # =========================
+        print("👉 Reset focus via search bar...")
+        search_box.click()
+        page.wait_for_timeout(500)
+
+        print("👉 TAB navigation to Export (17 times)...")
+        for _ in range(21):
+            page.keyboard.press("Tab")
+            page.wait_for_timeout(100)
+
+        print("👉 Pressing Enter to open Export menu...")
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(1000)  # Short pause to let dropdown render
+
+        print("👉 Pressing Enter again to select Excel and download...")
+
+        # =========================
+        # DOWNLOAD DETECTION
         # =========================
         try:
             with page.expect_download(timeout=90000) as download_info:
-                page.keyboard.press("Enter")
+                page.keyboard.press("Enter")  # This triggers the download
             
             download = download_info.value
             
             # --- CUSTOM BUSINESS DAY LOGIC ---
-            from datetime import timedelta
             now = datetime.now()
-            
-            # If it is before 9:00 AM, count it as the previous calendar day
-            if now.hour < 9:
-                business_date = now - timedelta(days=1)
-            else:
-                business_date = now
-
-            # Format the string using the calculated business date (but keep the actual time for tracking)
-            date_str = business_date.strftime('%Y-%m-%d')
-            time_str = now.strftime('%H-%M')
+            time_str = now.strftime('%H-%M-%S')
             
             # Create your final file path
             new_name = os.path.join(

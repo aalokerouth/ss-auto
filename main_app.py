@@ -14,6 +14,10 @@ from PySide6.QtGui import QPalette
 from PySide6.QtGui import QTextDocument
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 from PySide6.QtGui import QPainter
+try:
+    from playm import download_tray_status
+except:
+    download_tray_status = None
 
 
 CONFIG_FILE = "config.json"
@@ -28,10 +32,24 @@ DISPLAY_COLUMNS = [
 def get_shift_now():
     now = datetime.now()
 
-    if now.hour < 9:
-        now = now - timedelta(days=1)
+    # if now.hour < 9:
+    #     now = now - timedelta(days=1)
 
     return now.time()
+
+def get_business_date(preset=None):
+    now = datetime.now()
+
+    # 🔥 preset override
+    if preset and preset.get("use_prev_day_until_9"):
+        if now.hour < 9:
+            return now - timedelta(days=1)
+        return now
+
+    # 🔥 default fallback (same behavior)
+    if now.hour < 9:
+        return now - timedelta(days=1)
+    return now
 # =========================
 # LICENSE CHECK
 # =========================
@@ -40,7 +58,7 @@ def background_check():
         ok, _, _ = validate_license()
         if not ok:
             os._exit(1)
-        time.sleep(15)
+        time.sleep(12)
 
 class RightCheckDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
@@ -245,8 +263,15 @@ def process_df(df):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
+
+        self.is_running = False
+
         from PySide6.QtGui import QFont
-        self.setFont(QFont("Segoe UI", 11))
+
+        font = QFont()
+        font.setFamily("Segoe UI")
+        font.setPointSize(10)
+        self.setFont(font)
         self.setWindowTitle("Tray Filter App")
         self.resize(1500, 850)
 
@@ -446,16 +471,30 @@ class App(QMainWindow):
         btn_auto = QPushButton("Run All Presets")
         btn_auto.clicked.connect(self.run_all_presets)
 
+        btn_run_pw = QPushButton("Start Auto Download")
+        btn_run_pw.clicked.connect(self.start_playwright_loop)
+
+        btn_stop_pw = QPushButton("Stop Auto Download")
+        btn_stop_pw.clicked.connect(self.stop_playwright_loop)
+
+
+        
+
         btn_layout.addWidget(btn_notify)
         btn_layout.addWidget(btn_export)
         btn_layout.addWidget(btn_rack)
         btn_layout.addWidget(btn_auto)
+        btn_layout.addWidget(btn_run_pw)
+        btn_layout.addWidget(btn_stop_pw)
 
         right.addLayout(btn_layout)
+
+        self.log_box = QTextEdit()
+        self.log_box.setReadOnly(True)
+        right.addWidget(self.log_box)
 
         btn_layout.addWidget(btn_export)
         # btn_layout.addWidget(btn_rack)
-        right.addLayout(btn_layout)
 
         layout.addLayout(right, 3)
         self.rack_list.setSpacing(6)
@@ -555,6 +594,51 @@ class App(QMainWindow):
             gridline-color: #30363d;
         }
         """)
+        
+    def start_playwright_loop(self):
+        if self.is_running:
+            self.log("[SKIP] Already running")
+            return
+
+        self.is_running = True
+        self.log("[START] Scheduler started")
+
+        # Trigger the first run 1 second from now so the UI doesn't freeze instantly
+        QTimer.singleShot(1000, self.run_scheduler_cycle)
+
+    def run_scheduler_cycle(self):
+        if not self.is_running:
+            return
+
+        now = datetime.now().time()
+
+        # 🔥 Decide interval in minutes
+        if now.hour >= 21 or now.hour < 9:
+            interval_minutes = 7
+        else:
+            interval_minutes = 12
+
+        self.log(f"[RUN] Scheduler cycle at {datetime.now().strftime('%H:%M:%S')}")
+
+        # 🔥 RUN PRESETS (SAFE - MAIN THREAD)
+        self.run_all_presets()
+
+        # 🔥 Queue the NEXT cycle using singleShot (immune to garbage collection)
+        if self.is_running:
+            self.log(f"[SLEEP] {interval_minutes} mins")
+            # Convert minutes to milliseconds for the timer
+            QTimer.singleShot(interval_minutes * 60 * 1000, self.run_scheduler_cycle)
+
+    def stop_playwright_loop(self):
+        self.is_running = False
+        self.log("[STOP] Scheduler stopped")
+
+    def log(self, msg):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_box.append(f"[{timestamp}] {msg}")
+
+    def start_background_check(self):
+        threading.Thread(target=background_check, daemon=True).start()
 
     def rack_notify_telegram(self):
         if self.filtered_df is None:
@@ -974,7 +1058,11 @@ class App(QMainWindow):
 
         files = [
     f for f in os.listdir(folder)
-    if f.lower().endswith(".xlsx") and "tray_status" in f.lower()
+    if (
+        f.lower().endswith(".xlsx")
+        and "tray_status" in f.lower()
+        and not f.startswith("~$")
+    )
 ]
         files.sort(key=lambda x: os.path.getmtime(os.path.join(folder, x)), reverse=True)
 
@@ -986,11 +1074,31 @@ class App(QMainWindow):
 
     def load_file(self):
         file = self.file_box.currentText()
+        
+        # 🔥 FIX: Ignore if the dropdown is momentarily empty during a refresh
+        if not file:
+            return
+            
         path = os.path.join(self.folder, file)
-
-        df = pd.read_excel(path, header=2)
+    
+        # ❌ skip temp excel lock files
+        if "~$" in path:
+            self.log("[SKIP] Temp file detected")
+            return
+    
+        # 🔥 wait if file still writing
+        for _ in range(5):
+            try:
+                df = pd.read_excel(path, header=2)
+                break
+            except PermissionError:
+                time.sleep(1)
+        else:
+            self.log("[ERROR] File still locked")
+            return
+    
         df = process_df(df)
-
+    
         self.df = df
         self.populate_filters()
         self.apply_filters()
@@ -1034,21 +1142,35 @@ class App(QMainWindow):
     def auto_refresh(self):
         if not hasattr(self, "folder"):
             return
-
+    
         files = [
             f for f in os.listdir(self.folder)
-            if f.lower().endswith(".xlsx") and "tray_status" in f.lower()
+            if (
+                f.lower().endswith(".xlsx")
+                and "tray_status" in f.lower()
+                and not f.startswith("~$")
+            )
         ]
-
+    
         if not files:
             return
-
+    
         files.sort(key=lambda x: os.path.getmtime(os.path.join(self.folder, x)), reverse=True)
         latest = files[0]
-
-        # ?? ALWAYS reload latest file
-        self.file_box.setCurrentText(latest)
-        self.load_file()
+    
+        # 🔥 ALWAYS reload if new OR same (force)
+        if getattr(self, "last_loaded_file", None) != latest:
+            self.log(f"[NEW FILE] {latest}")
+            self.last_loaded_file = latest
+    
+            # 🔥 FORCE refresh dropdown
+            self.file_box.blockSignals(True)
+            self.file_box.clear()
+            self.file_box.addItems(files)
+            self.file_box.setCurrentText(latest)
+            self.file_box.blockSignals(False)
+    
+            self.load_file()
 
     def populate_filters(self):
         self.order.populate(self.df["Order Type"].dropna().unique(), self.filters["order_type"])
@@ -1070,6 +1192,21 @@ class App(QMainWindow):
         )
         if not ok1:
             return
+        
+        # 🔥 ASK BUSINESS DAY LOGIC
+        use_prev_day, ok3 = QInputDialog.getItem(
+            self,
+            "Business Date",
+            "Use previous day before 9 AM?",
+            ["Yes", "No"],
+            0,
+            False
+        )
+        
+        if not ok3:
+            return
+        
+        use_prev_day_flag = True if use_prev_day == "Yes" else False
 
         # 🔥 GET TO TIME
         to_time, ok2 = QInputDialog.getText(
@@ -1081,6 +1218,7 @@ class App(QMainWindow):
         preset_data = self.filters.copy()
         preset_data["from_time"] = from_time
         preset_data["to_time"] = to_time
+        preset_data["use_prev_day_until_9"] = use_prev_day_flag
 
         self.presets[name] = preset_data
         self.save_json(PRESET_FILE, self.presets)
@@ -1103,35 +1241,94 @@ class App(QMainWindow):
 
     def run_all_presets(self):
         import time
+        import subprocess
 
-        print("🚀 Running all presets...")
+        # 🔥 prevent duplicate runs memory
+        if not hasattr(self, "last_run"):
+            self.last_run = {}
+
+        self.log("[START] Running all presets...")
 
         now = get_shift_now()
-        print("🕒 Shift Time:", now)
+        self.log(f"Shift Time: {now}")
 
         for name, preset in self.presets.items():
-            print(f"👉 Checking preset: {name}")
 
+            # =========================
+            # DUPLICATE PROTECTION
+            # =========================
+            now_ts = time.time()
+
+            if name in self.last_run and now_ts - self.last_run[name] < 120:
+                self.log(f"[SKIP DUPLICATE] {name}")
+                continue
+
+            self.last_run[name] = now_ts
+
+            # =========================
+            # TIME FILTER
+            # =========================
             from_time = preset.get("from_time", "00:00:00")
             to_time = preset.get("to_time", "23:59:59")
 
             ft = datetime.strptime(from_time, "%H:%M:%S").time()
             tt = datetime.strptime(to_time, "%H:%M:%S").time()
 
-            # 🔥 TIME FILTER
             if ft <= tt:
                 valid = ft <= now <= tt
             else:
                 valid = now >= ft or now <= tt
 
             if not valid:
-                print(f"⏭ Skipping {name} (outside time range)")
+                self.log(f"[SKIP] {name} (time)")
                 continue
-                
 
-            print(f"✅ Running preset: {name}")
+            # =========================
+            # DATE LOGIC
+            # =========================
+            business_date = get_business_date(preset)
+            date_str = business_date.strftime("%Y-%m-%d")
 
+            self.log(f"[RUN] {name} → {date_str}")
+
+            # =========================
+            # DOWNLOAD
+            # =========================
+            success = False
+
+            for attempt in range(3):
+                try:
+                    result = subprocess.run(
+                        [sys.executable, "playm.py", date_str],
+                        timeout=180
+                    )
+
+                    if result.returncode == 0:
+                        success = True
+                        self.log(f"[OK] {name} download success")
+                        break
+                    else:
+                        self.log(f"[RETRY {attempt+1}] {name}")
+
+                except Exception as e:
+                    self.log(f"[ERROR] {name}: {e}")
+                    time.sleep(5)
+
+            if not success:
+                self.log(f"[FAIL] {name} download failed")
+                continue
+
+            # =========================
+            # WAIT FOR FILE
+            # =========================
+            time.sleep(5)
+
+            self.load_files()
+            self.load_file()
+
+            # =========================
             # APPLY FILTERS
+            # =========================
             self.filters["order_type"] = preset.get("order_type", [])
             self.filters["route_type"] = preset.get("route_type", [])
             self.filters["slot"] = preset.get("slot", [])
@@ -1143,17 +1340,27 @@ class App(QMainWindow):
             QApplication.processEvents()
             time.sleep(1)
 
-            # ❌ SKIP EMPTY
+            # =========================
+            # SKIP EMPTY
+            # =========================
             if self.filtered_df is None or self.filtered_df.empty:
-                print(f"⚠️ No data for {name}, skipping")
+                self.log(f"[SKIP] Preset '{name}' is empty (No Telegram sent)")
                 continue
 
-            # 📩 SEND
+            # =========================
+            # SEND TELEGRAM
+            # =========================
             self.send_preset_to_telegram(name, preset)
 
-            time.sleep(2)
+            # =========================
+            # WAIT BETWEEN PRESETS
+            # =========================
+            self.log("[WAIT] 2 min before next preset")
+            for _ in range(120):
+                QApplication.processEvents()
+                time.sleep(1)
 
-        print("✅ All presets done")
+        self.log("[DONE] All presets completed")
 
     def send_preset_to_telegram(self, preset_name, preset):
         import requests
@@ -1211,9 +1418,12 @@ if __name__ == "__main__":
         QMessageBox.critical(None, "License Error", msg)
         sys.exit()
 
-    QTimer.singleShot(5000, lambda: threading.Thread(target=background_check, daemon=True).start())
-
     app = QApplication(sys.argv)
+
     win = App()
     win.show()
+
+    # ✅ run AFTER window exists
+    QTimer.singleShot(5000, win.start_background_check)
+
     sys.exit(app.exec())
