@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import sys, os, json, threading, time
+from turtle import right
 import pandas as pd
 from PySide6.QtWidgets import *
 from PySide6.QtCore import QEvent, QSize, Qt, QAbstractTableModel, QTimer
@@ -8,9 +9,11 @@ from PySide6.QtWidgets import QWidgetAction
 from PySide6.QtWidgets import QInputDialog
 from license_system import validate_license
 from PySide6.QtWidgets import QStyledItemDelegate
+
 from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QStyleOptionButton, QStyle
 from PySide6.QtGui import QPalette
+from PySide6.QtGui import QBrush
 from PySide6.QtGui import QTextDocument
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 from PySide6.QtGui import QPainter
@@ -116,7 +119,7 @@ class RightCheckDelegate(QStyledItemDelegate):
             rect = option.rect
             cb_rect = QRect(rect.right() - 40, rect.top() + 8, 22, 22)
 
-            if cb_rect.contains(event.pos()):
+            if cb_rect.contains(event.position().toPoint()):
                 current = index.data(Qt.CheckStateRole)
                 new_state = Qt.Unchecked if current == Qt.Checked else Qt.Checked
 
@@ -130,9 +133,13 @@ class RightCheckDelegate(QStyledItemDelegate):
 # TABLE MODEL
 # =========================
 class PandasModel(QAbstractTableModel):
-    def __init__(self, df):
+    def __init__(self, df, alert_rows=None):
         super().__init__()
         self.df = df
+        self.alert_rows = alert_rows or set()
+        self.flash_state = True
+        self.flash_level = 0
+        self.flash_direction = 1
         
 
     def rowCount(self, parent=None):
@@ -142,8 +149,57 @@ class PandasModel(QAbstractTableModel):
         return len(self.df.columns)
 
     def data(self, index, role):
+        value = self.df.iloc[index.row(), index.column()]
+
         if role == Qt.DisplayRole:
-            return str(self.df.iloc[index.row(), index.column()])
+            return str(value)
+
+        # ?? BACKGROUND COLORS
+        if role == Qt.BackgroundRole:
+
+            # ?? PRIORITY ALERT (Highway last 7 ? FLASH RED)
+            if index.row() in self.alert_rows:
+                if self.flash_state:
+                    return QColor(self.flash_level, 0, 0)  # ?? BRIGHT RED (your request)
+                else:
+                    return QColor("#2a2a2a")  # blink off
+
+            try:
+                order_type = str(self.df.iloc[index.row()]["Order Type"]).upper()
+
+                if "B2B" in order_type:
+                    return QColor("#FFA500")  # Orange
+                elif "B2C" in order_type:
+                    return QColor("#FF4D4D")  # Red
+                elif "IWT" in order_type:
+                    return QColor("#3FB950")  # Green
+            except:
+                pass
+
+        # ?? TEXT COLOR
+        if role == Qt.ForegroundRole:
+            try:
+                order_type = str(self.df.iloc[index.row()]["Order Type"]).upper()
+
+                # white text for strong backgrounds
+                if "B2C" in order_type or index.row() in self.alert_rows:
+                    return QBrush(QColor("white"))
+            except:
+                pass
+
+    
+    def toggle_flash(self):
+        # ?? smooth pulse (0 ? 255 ? 0)
+        self.flash_level += self.flash_direction * 25
+    
+        if self.flash_level >= 255:
+            self.flash_level = 255
+            self.flash_direction = -1
+        elif self.flash_level <= 80:
+            self.flash_level = 80
+            self.flash_direction = 1
+    
+        self.layoutChanged.emit()
 
     def headerData(self, col, orientation, role):
         if role == Qt.DisplayRole and orientation == Qt.Horizontal:
@@ -254,6 +310,9 @@ def process_df(df):
 
     df = df[df["Current Rack Grp"].notna()]
     df = df[df["Current Rack Grp"] != ""]
+
+    # Replaces "-" with highway nigga
+    df["Current Rack Grp"] = df["Current Rack Grp"].replace("-", "Highway")
 
     return df
 
@@ -396,6 +455,19 @@ class App(QMainWindow):
         # ===== RIGHT PANEL =====
         right = QVBoxLayout()
 
+        # ?? ALERT BANNER
+        self.alert_banner = QLabel("")
+        self.alert_banner.setStyleSheet("""
+            background-color: #8B0000;
+            color: white;
+            font-weight: bold;
+            padding: 8px;
+            border-radius: 6px;
+        """)
+        self.alert_banner.setVisible(False)
+        
+        right.addWidget(self.alert_banner)
+
         # =========================
         # 📊 METRICS BAR
         # =========================
@@ -424,6 +496,11 @@ class App(QMainWindow):
         self.remove_st.setChecked(True)
         self.remove_st.stateChanged.connect(self.apply_filters)
         right.addWidget(self.remove_st)
+
+        self.remove_non_ptl = QCheckBox("PTL only")
+        self.remove_non_ptl.setChecked(True)
+        self.remove_non_ptl.stateChanged.connect(self.apply_filters)
+        right.addWidget(self.remove_non_ptl)
 
         self.active_rack_label = QLabel("All Racks")
         self.active_rack_label.setStyleSheet("color:#58a6ff; font-weight:bold;")
@@ -506,6 +583,10 @@ class App(QMainWindow):
         self.license_label = QLabel("License: Checking...")
         self.license_label.setStyleSheet("color:#58a6ff; font-weight:bold;")
         right.addWidget(self.license_label)
+
+        # ?? FLASH TIMER (after table is created)
+        self.flash_timer = QTimer()
+        self.flash_timer.timeout.connect(self.flash_alert_rows)
 
 
     # =========================
@@ -731,18 +812,62 @@ class App(QMainWindow):
         if self.remove_st.isChecked():
             df = df[df["Tray Code"].notna() & (df["Tray Code"] != "")]
 
+        # ?? REMOVE NON PTL
+        if self.remove_non_ptl.isChecked():
+            if "Pick Type" in df.columns:
+                df = df[df["Pick Type"].astype(str).str.upper() == "PTL"]
+
         df = df[[c for c in DISPLAY_COLUMNS if c in df.columns]]
 
         if "Tray Code" in df.columns:
             df = df.drop_duplicates(subset=["Tray Code"])
 
         self.filtered_df = df
-        self.table.setModel(PandasModel(df))
+
+        # ?? GET ALERT DATA
+        alert_rows, alert_trays = self.get_highway_alert_rows()
+
+        # ?? SET TABLE MODEL
+        model = PandasModel(df, alert_rows)
+        self.table.setModel(model)
+
+        # ?? UPDATE BANNER (PLACE HERE)
+        if alert_trays:
+            tray_text = ", ".join(alert_trays[:10])
+            extra = f" (+{len(alert_trays)-10})" if len(alert_trays) > 10 else ""
+
+            self.alert_banner.setText(f"HIGHWAY ALERT: {tray_text}{extra}")
+            self.alert_banner.setVisible(True)
+        else:
+            self.alert_banner.setVisible(False)
+
+        # ? CONTROL FLASH TIMER (PLACE HERE)
+        if alert_rows:
+            if not self.flash_timer.isActive():
+                self.flash_timer.start(120)  # smooth pulse
+        else:
+            self.flash_timer.stop()
+
+        # ?? CONTINUE NORMAL FLOW
         self.update_rack(df)
         self.update_metrics(df)
 
     def update_rack(self, df):
-        grp = df.groupby("Current Rack Grp").size().sort_values(ascending=False)
+        grp = df.groupby("Current Rack Grp").size()
+
+        # ?? Move Highway to top
+        if "Highway" in grp.index:
+            highway_count = grp["Highway"]
+            grp = grp.drop("Highway")
+            grp = grp.sort_values(ascending=False)
+
+            # insert at top
+            grp = pd.concat([
+                pd.Series({"Highway": highway_count}),
+                grp
+            ])
+        else:
+            grp = grp.sort_values(ascending=False)
 
         self.rack_list.blockSignals(True)
         self.rack_list.clear()
@@ -781,8 +906,20 @@ class App(QMainWindow):
             (f" (+{len(checked_racks)-3})" if len(checked_racks) > 3 else "")
         )
 
-        self.table.setModel(PandasModel(df))
+        alert_rows, alert_trays = self.get_highway_alert_rows()
 
+        model = PandasModel(df, alert_rows)
+        self.table.setModel(model)
+
+        # ?? UPDATE BANNER
+        if alert_trays:
+            tray_text = ", ".join(alert_trays[:10])
+            extra = f" (+{len(alert_trays)-10})" if len(alert_trays) > 10 else ""
+
+            self.alert_banner.setText(f"?? HIGHWAY ALERT: {tray_text}{extra}")
+            self.alert_banner.setVisible(True)
+        else:
+            self.alert_banner.setVisible(False)
     # =========================
     # EXPORT
     # =========================
@@ -1055,6 +1192,7 @@ class App(QMainWindow):
             self.save_json(CONFIG_FILE, self.config)
 
         self.folder = folder
+        self.manage_file_archive()
 
         files = [
     f for f in os.listdir(folder)
@@ -1243,7 +1381,6 @@ class App(QMainWindow):
         import time
         import subprocess
 
-        # 🔥 prevent duplicate runs memory
         if not hasattr(self, "last_run"):
             self.last_run = {}
 
@@ -1252,48 +1389,29 @@ class App(QMainWindow):
         now = get_shift_now()
         self.log(f"Shift Time: {now}")
 
+        # =========================
+        # ?? COLLECT UNIQUE DATES
+        # =========================
+        date_to_presets = {}
+
         for name, preset in self.presets.items():
-
-            # =========================
-            # DUPLICATE PROTECTION
-            # =========================
-            now_ts = time.time()
-
-            if name in self.last_run and now_ts - self.last_run[name] < 120:
-                self.log(f"[SKIP DUPLICATE] {name}")
-                continue
-
-            self.last_run[name] = now_ts
-
-            # =========================
-            # TIME FILTER
-            # =========================
-            from_time = preset.get("from_time", "00:00:00")
-            to_time = preset.get("to_time", "23:59:59")
-
-            ft = datetime.strptime(from_time, "%H:%M:%S").time()
-            tt = datetime.strptime(to_time, "%H:%M:%S").time()
-
-            if ft <= tt:
-                valid = ft <= now <= tt
-            else:
-                valid = now >= ft or now <= tt
-
-            if not valid:
-                self.log(f"[SKIP] {name} (time)")
-                continue
-
-            # =========================
-            # DATE LOGIC
-            # =========================
             business_date = get_business_date(preset)
             date_str = business_date.strftime("%Y-%m-%d")
 
-            self.log(f"[RUN] {name} → {date_str}")
+            if date_str not in date_to_presets:
+                date_to_presets[date_str] = []
 
-            # =========================
-            # DOWNLOAD
-            # =========================
+            date_to_presets[date_str].append((name, preset))
+
+        self.log(f"[DATES] {list(date_to_presets.keys())}")
+
+        # =========================
+        # ?? DOWNLOAD EACH DATE ONCE
+        # =========================
+        for date_str, preset_list in date_to_presets.items():
+
+            self.log(f"[DOWNLOAD] {date_str}")
+
             success = False
 
             for attempt in range(3):
@@ -1305,62 +1423,121 @@ class App(QMainWindow):
 
                     if result.returncode == 0:
                         success = True
-                        self.log(f"[OK] {name} download success")
+                        self.log(f"[OK] Download success {date_str}")
                         break
                     else:
-                        self.log(f"[RETRY {attempt+1}] {name}")
+                        self.log(f"[RETRY {attempt+1}] {date_str}")
 
                 except Exception as e:
-                    self.log(f"[ERROR] {name}: {e}")
+                    self.log(f"[ERROR] {date_str}: {e}")
                     time.sleep(5)
 
             if not success:
-                self.log(f"[FAIL] {name} download failed")
+                self.log(f"[FAIL] {date_str}")
                 continue
 
             # =========================
-            # WAIT FOR FILE
+            # LOAD FILE ONCE
             # =========================
             time.sleep(5)
-
             self.load_files()
             self.load_file()
 
             # =========================
-            # APPLY FILTERS
+            # RUN PRESETS USING THIS DATA
             # =========================
-            self.filters["order_type"] = preset.get("order_type", [])
-            self.filters["route_type"] = preset.get("route_type", [])
-            self.filters["slot"] = preset.get("slot", [])
-            self.filters["order_class"] = preset.get("order_class", [])
+            for name, preset in preset_list:
 
-            self.populate_filters()
-            self.apply_filters()
+                now_ts = time.time()
 
-            QApplication.processEvents()
-            time.sleep(1)
+                if name in self.last_run and now_ts - self.last_run[name] < 120:
+                    self.log(f"[SKIP DUPLICATE] {name}")
+                    continue
 
-            # =========================
-            # SKIP EMPTY
-            # =========================
-            if self.filtered_df is None or self.filtered_df.empty:
-                self.log(f"[SKIP] Preset '{name}' is empty (No Telegram sent)")
-                continue
+                self.last_run[name] = now_ts
 
-            # =========================
-            # SEND TELEGRAM
-            # =========================
-            self.send_preset_to_telegram(name, preset)
+                # =========================
+                # TIME FILTER
+                # =========================
+                from_time = preset.get("from_time", "00:00:00")
+                to_time = preset.get("to_time", "23:59:59")
 
-            # =========================
-            # WAIT BETWEEN PRESETS
-            # =========================
-            self.log("[WAIT] 2 min before next preset")
-            for _ in range(120):
+                ft = datetime.strptime(from_time, "%H:%M:%S").time()
+                tt = datetime.strptime(to_time, "%H:%M:%S").time()
+
+                if ft <= tt:
+                    valid = ft <= now <= tt
+                else:
+                    valid = now >= ft or now <= tt
+
+                if not valid:
+                    self.log(f"[SKIP] {name} (time)")
+                    continue
+
+                self.log(f"[RUN] {name}")
+
+                # =========================
+                # APPLY FILTERS
+                # =========================
+                self.filters["order_type"] = preset.get("order_type", [])
+                self.filters["route_type"] = preset.get("route_type", [])
+                self.filters["slot"] = preset.get("slot", [])
+                self.filters["order_class"] = preset.get("order_class", [])
+
+                self.populate_filters()
+                self.apply_filters()
+
                 QApplication.processEvents()
                 time.sleep(1)
 
+                if self.filtered_df is None or self.filtered_df.empty:
+                    self.log(f"[SKIP] {name} empty")
+                    continue
+
+                self.send_preset_to_telegram(name, preset)
+
+                # =========================
+                # WAIT
+                # =========================
+                self.log("[WAIT] 2 min")
+                for _ in range(120):
+                    QApplication.processEvents()
+                    time.sleep(1)
+
         self.log("[DONE] All presets completed")
+
+
+    def get_highway_alert_rows(self):
+       if self.filtered_df is None:
+           return set(), []
+
+       df = self.filtered_df.reset_index(drop=True)
+
+       highway_mask = df["Current Rack Grp"] == "Highway"
+
+       alert_rows = set()
+       alert_trays = []
+
+       count = 0
+
+       for i in range(len(df)-1, -1, -1):
+           if highway_mask.iloc[i]:
+               count += 1
+               alert_rows.add(i)
+               alert_trays.append(str(df.iloc[i]["Tray Code"]))
+
+               if count >= 7:
+                   return alert_rows, list(reversed(alert_trays))
+           else:
+               break
+
+       return set(), []
+    
+    def flash_alert_rows(self):
+        model = self.table.model()
+        if hasattr(model, "toggle_flash"):
+            model.toggle_flash()
+    
 
     def send_preset_to_telegram(self, preset_name, preset):
         import requests
@@ -1385,12 +1562,33 @@ class App(QMainWindow):
             ""
         ]
 
+        # ?? COUNT TRAYS IN HIGHWAY
+        highway_df = self.filtered_df[
+            self.filtered_df["Current Rack Grp"] == "Highway"
+        ]
+
+        tray_counts = highway_df["Tray Code"].value_counts()
+
+        # trays that appear >5 times
+        highway_alert_trays = set(
+            tray_counts[tray_counts > 5].index.astype(str)
+        )
+
         racks = self.filtered_df.groupby("Current Rack Grp")
 
         for rack, df in racks:
-            trays = df["Tray Code"].drop_duplicates().astype(str).tolist()
-            if trays:
-                lines.append(f"{rack}  " + "  ".join(trays))
+            trays = df["Tray Code"].astype(str).tolist()  # ? DO NOT drop duplicates
+
+            formatted_trays = []
+
+            for t in trays:
+                if rack == "Highway" and t in highway_alert_trays:
+                    formatted_trays.append(f"??{t}")  # ?? MARK RED
+                else:
+                    formatted_trays.append(t)
+
+            if formatted_trays:
+                lines.append(f"{rack}  " + "  ".join(formatted_trays))
 
         message = "\n".join(lines)
 
@@ -1398,6 +1596,52 @@ class App(QMainWindow):
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": message}
         )
+
+    def manage_file_archive(self):
+        import shutil
+
+        if not hasattr(self, "folder"):
+            return
+
+        files = [
+            f for f in os.listdir(self.folder)
+            if (
+                f.lower().endswith(".xlsx")
+                and "tray_status" in f.lower()
+                and not f.startswith("~$")
+            )
+        ]
+
+        if len(files) <= 10:
+            return  # nothing to archive
+
+        # ?? sort by oldest first
+        files.sort(key=lambda x: os.path.getmtime(os.path.join(self.folder, x)))
+
+        # files to move (keep latest 10)
+        files_to_move = files[:-10]
+
+        # ?? business date logic
+        now = datetime.now()
+        if now.hour < 9:
+            archive_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            archive_date = now.strftime("%Y-%m-%d")
+
+        archive_base = os.path.join(self.folder, "archive")
+        archive_folder = os.path.join(archive_base, archive_date)
+
+        os.makedirs(archive_folder, exist_ok=True)
+
+        for f in files_to_move:
+            src = os.path.join(self.folder, f)
+            dst = os.path.join(archive_folder, f)
+
+            try:
+                shutil.move(src, dst)
+                self.log(f"[ARCHIVE] {f} ? {archive_date}")
+            except Exception as e:
+                self.log(f"[ARCHIVE ERROR] {f}: {e}")
 
     # =========================
     # JSON
