@@ -1432,8 +1432,7 @@ class App(QMainWindow):
 
             for attempt in range(3):
                 try:
-                    playm_path = os.path.join(os.path.dirname(sys.executable), "playm.exe")
-                    process = subprocess.Popen([playm_path, date_str])
+                    process = subprocess.Popen([sys.executable, "playm.py", date_str])
                     
                     while process.poll() is None:
                         self.wait_non_blocking(0.5)
@@ -1614,13 +1613,10 @@ class App(QMainWindow):
 
     def manage_file_archive(self):
         import shutil
-        import os
-        from datetime import datetime, timedelta
 
         if not hasattr(self, "folder"):
             return
 
-        # 1. Grab only valid tray_status files
         files = [
             f for f in os.listdir(self.folder)
             if (
@@ -1631,41 +1627,33 @@ class App(QMainWindow):
         ]
 
         if len(files) <= 10:
-            return  # Nothing to archive yet
+            return  # nothing to archive
 
-        # 2. Sort by oldest first based on modification time
+        # ?? sort by oldest first
         files.sort(key=lambda x: os.path.getmtime(os.path.join(self.folder, x)))
 
-        # 3. Identify the excess oldest files (keep exactly the latest 10)
+        # files to move (keep latest 10)
         files_to_move = files[:-10]
 
+        # ?? business date logic
+        now = datetime.now()
+        if now.hour < 9:
+            archive_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            archive_date = now.strftime("%Y-%m-%d")
+
         archive_base = os.path.join(self.folder, "archive")
+        archive_folder = os.path.join(archive_base, archive_date)
+
+        os.makedirs(archive_folder, exist_ok=True)
 
         for f in files_to_move:
             src = os.path.join(self.folder, f)
-            
-            # 🔥 Get the time the file was ACTUALLY created/downloaded
-            file_timestamp = os.path.getmtime(src)
-            file_time = datetime.fromtimestamp(file_timestamp)
-            
-            # 🔥 Apply the 9 AM Business Date Logic to the file's time
-            if file_time.hour < 9:
-                file_biz_date = file_time - timedelta(days=1)
-            else:
-                file_biz_date = file_time
-                
-            archive_date_str = file_biz_date.strftime("%Y-%m-%d")
-            archive_folder = os.path.join(archive_base, archive_date_str)
-            
-            # Ensure the daily folder exists
-            os.makedirs(archive_folder, exist_ok=True)
-            
             dst = os.path.join(archive_folder, f)
 
-            # Move it!
             try:
                 shutil.move(src, dst)
-                self.log(f"[ARCHIVE] Moved {f} -> archive/{archive_date_str}")
+                self.log(f"[ARCHIVE] {f} ? {archive_date}")
             except Exception as e:
                 self.log(f"[ARCHIVE ERROR] {f}: {e}")
 

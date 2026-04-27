@@ -3,12 +3,8 @@ from datetime import datetime
 from datetime import timedelta
 import os
 import sys
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
 
-if getattr(sys, 'frozen', False):
-    DOWNLOAD_DIR = os.path.dirname(sys.executable)
-else:
-    DOWNLOAD_DIR = os.path.dirname(os.path.abspath(__file__))
+DOWNLOAD_DIR = r"D:\current tray"
 
 def download_tray_status():
     with sync_playwright() as p:
